@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import time
+from pathlib import Path
 
 import pandas as pd
 import torch
@@ -116,11 +117,17 @@ def make_collator(tokenizer: object):
     return collate
 
 
-def build_training_arguments(config: dict, quick: bool, device: str) -> TrainingArguments:
+def build_training_arguments(
+    config: dict,
+    quick: bool,
+    device: str,
+    seed: int,
+    output_dir: str,
+) -> TrainingArguments:
     """Create training settings for the quick, CPU, or CUDA run."""
     is_cuda = device == "cuda"
     return TrainingArguments(
-        output_dir=str(ROOT / "results" / "training"),
+        output_dir=output_dir,
         learning_rate=float(config["learning_rate"]),
         lr_scheduler_type="cosine",
         warmup_ratio=float(config["warmup_ratio"]),
@@ -140,8 +147,8 @@ def build_training_arguments(config: dict, quick: bool, device: str) -> Training
         logging_steps=1,
         save_strategy="no",
         report_to="none",
-        seed=int(config["seed"]),
-        data_seed=int(config["seed"]),
+        seed=seed,
+        data_seed=seed,
         dataloader_num_workers=0,
         remove_unused_columns=False,
     )
@@ -200,37 +207,59 @@ def save_training_artifacts(
     quick: bool,
     row_count: int,
     epoch_count: int,
+    adapter_dir: str | None = None,
+    training_time_s: float | None = None,
+    log_path: str | None = None,
 ) -> dict[str, object]:
     """Save the LoRA adapter and write the training summary."""
-    adapter_dir = ROOT / "results" / "llm_adapter"
+    adapter_dir = (
+        ROOT / "results" / "llm_adapter"
+        if adapter_dir is None
+        else ROOT / adapter_dir
+    )
     adapter_dir.mkdir(parents=True, exist_ok=True)
     model.save_pretrained(adapter_dir)
     tokenizer.save_pretrained(adapter_dir)
-    log_path = ROOT / "results" / "training_log.txt"
-    with log_path.open("w", encoding="utf-8") as handle:
+    summary_path = (
+        ROOT / "results" / "training_log.txt"
+        if log_path is None
+        else Path(log_path)
+    )
+    with summary_path.open("w", encoding="utf-8") as handle:
         handle.write(f"device={device}\n")
         handle.write(f"quick={quick}\n")
         handle.write(f"train_rows={row_count}\n")
         handle.write(f"epochs={epoch_count}\n")
         handle.write(f"optimizer_steps={trainer.state.global_step}\n")
         handle.write(f"train_loss={training_loss:.6f}\n")
+        if training_time_s is not None:
+            handle.write(f"training_time_seconds={training_time_s:.3f}\n")
     return {
         "device": device,
         "train_rows": row_count,
         "optimizer_steps": trainer.state.global_step,
         "train_loss": training_loss,
         "adapter_path": str(adapter_dir),
-        "log_path": str(log_path),
+        "log_path": str(summary_path),
     }
 
 
 def train_model(
     quick: bool = False,
     prepared_data: tuple | None = None,
+    seed: int | None = None,
+    adapter_dir: str | None = None,
 ) -> dict[str, object]:
     """Fine-tune and save a LoRA adapter using the configured CPU or CUDA settings."""
     config = load_config(ROOT / "config.yaml")
-    set_seed(int(config["seed"]))
+    run_seed = int(config["seed"] if seed is None else seed)
+    if adapter_dir is None:
+        adapter_path = ROOT / "results" / "llm_adapter"
+    else:
+        adapter_path = Path(adapter_dir)
+        if not adapter_path.is_absolute():
+            adapter_path = ROOT / adapter_path
+    set_seed(run_seed)
     device = pick_device()
     print(f"Device: {device}")
     data = prepared_data or prepare_dataset(resolve_path(config["csv_path"]))
@@ -241,7 +270,7 @@ def train_model(
     training_rows = sample_training_rows(
         split_map["train"],
         row_limit=row_limit,
-        seed=int(config["seed"]),
+        seed=run_seed,
     )
     model, tokenizer = load_base_model(
         str(config["model_name"]), device, training=True
@@ -260,9 +289,22 @@ def train_model(
         build_text_rows(training_rows),
         max_length=int(config["max_seq_length"]),
     )
-    arguments = build_training_arguments(config, quick, device)
+    training_output = (
+        ROOT / "results" / "training"
+        if adapter_dir is None
+        else adapter_path / "trainer"
+    )
+    arguments = build_training_arguments(
+        config,
+        quick,
+        device,
+        seed=run_seed,
+        output_dir=str(training_output),
+    )
     trainer = build_trainer(model, tokenizer, examples, arguments)
+    training_started = time.monotonic()
     training_loss = trainer.train().training_loss
+    training_time_s = time.monotonic() - training_started
     return save_training_artifacts(
         model=model,
         tokenizer=tokenizer,
@@ -272,6 +314,13 @@ def train_model(
         quick=quick,
         row_count=len(training_rows),
         epoch_count=int(arguments.num_train_epochs),
+        adapter_dir=str(adapter_path) if adapter_dir is not None else None,
+        training_time_s=training_time_s,
+        log_path=(
+            str(adapter_path / "training_log.txt")
+            if adapter_dir is not None
+            else None
+        ),
     )
 
 

@@ -71,6 +71,7 @@ def test_run_eval_quick_writes_report(tmp_path, monkeypatch) -> None:
         "quick_eval_flows": 3,
         "max_eval_flows": 4,
         "quick_variants": [{"padding": 16, "delay": 0}, {"padding": 0, "delay": 50}],
+        "delay_mode": "client_and_reply",
         "padding_values": [0, 16, 64],
         "delay_values_ms": [0, 50, 100],
         "pcap_path": "attack.pcap",
@@ -85,7 +86,14 @@ def test_run_eval_quick_writes_report(tmp_path, monkeypatch) -> None:
         "max_seq_length": 256,
     }
 
-    def fake_variants(source, output, padding_values, delay_values_ms, variant_pairs=None):
+    def fake_variants(
+        source,
+        output,
+        padding_values,
+        delay_values_ms,
+        variant_pairs=None,
+        delay_mode="client_and_reply",
+    ):
         """Create a small quick manifest without writing packet data."""
         output.mkdir(parents=True, exist_ok=True)
         pd.DataFrame(

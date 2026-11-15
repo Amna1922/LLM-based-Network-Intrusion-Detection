@@ -13,3 +13,7 @@
 - The full-run defaults use 4000 rows, 2 epochs, micro-batch 4, and accumulation 8 for the GTX 1650 Ti. The quick path uses 200 rows and two optimizer steps.
 - One fixed seed is used. Training logs show per-step loss and an ETA.
 - The CSV and PCAP sources differ and therefore the project tracks the domain gap explicitly instead of pretending the domains are identical.
+- Delay experiments default to `client_and_reply` to preserve existing behavior. The delay audit also measures `client_only`, which shifts attacker packets after the first packet of each flow and leaves replies unchanged.
+- Classical baseline runs use seeds 42 through 51. Logistic regression uses `max_iter=1000`, random forest uses 200 trees, and histogram gradient boosting uses scikit-learn defaults with the run seed.
+- LoRA seed statistics include the existing seed 42 model and new runs at seeds 123 and 2025. Zero-shot outputs without a valid class name count as non-DDoS detections; zero-shot has no ROC-AUC because it does not provide class scores.
+- Detection intervals use the Wilson score method at the configured 95 percent confidence level. Seed-level standard deviations use the sample standard deviation.

@@ -24,11 +24,14 @@ If you use CUDA, install the CUDA build of PyTorch. For a GTX 1650 Ti, the cu121
 python -m pytest -q
 python -m src.run_eval --quick
 python -m src.run_eval
+python -m src.delay_audit
+python -m src.baselines
 ```
 
 The quick run reuses an existing LoRA adapter when available, evaluates 100 flows, and uses two perturbation variants. Use `python -m src.run_eval --quick --retrain` to retrain for the smoke test. The full run uses the configured defaults and reuses the adapter unless `--retrain` is supplied.
 
 Results are written under `results/` and docs under `docs/`. Place benign `.pcap` or `.pcapng` files in `../data/benign_pcaps/` to train and evaluate using PCAP flows. If that directory has no captures, the project uses the CSV-only fallback and reports the source mismatch.
+The delay audit compares `client_only` and `client_and_reply` timing policies on held-out attack flows and writes `results/delay_audit.md`. It requires PCAP-primary data and reuses its report and generated captures when present.
 
 ## Regenerate docs
 ```bash

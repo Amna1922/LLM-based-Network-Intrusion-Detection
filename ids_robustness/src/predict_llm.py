@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 import pandas as pd
 import torch
@@ -23,20 +24,28 @@ def parse_class_name(answer: str) -> str | None:
     return "Benign" if match.group(1).lower() == "benign" else "DDoS"
 
 
-def load_finetuned_model() -> tuple[torch.nn.Module, object, str]:
+def load_finetuned_model(
+    adapter_dir: str | Path | None = None,
+) -> tuple[torch.nn.Module, object, str]:
     """Load the local base model and saved LoRA adapter for generation."""
     config = load_config(ROOT / "config.yaml")
     device = pick_device()
-    adapter_dir = ROOT / "results" / "llm_adapter"
-    if not (adapter_dir / "adapter_config.json").is_file():
+    adapter_path = (
+        ROOT / "results" / "llm_adapter"
+        if adapter_dir is None
+        else Path(adapter_dir)
+    )
+    if not adapter_path.is_absolute():
+        adapter_path = ROOT / adapter_path
+    if not (adapter_path / "adapter_config.json").is_file():
         raise FileNotFoundError(
-            f"LoRA adapter not found at {adapter_dir}. Run `python -m src.train_llm` first."
+            f"LoRA adapter not found at {adapter_path}. Run `python -m src.train_llm` first."
         )
     model, tokenizer = load_base_model(str(config["model_name"]), device)
     tokenizer.padding_side = "left"
     model = PeftModel.from_pretrained(
         model,
-        str(adapter_dir),
+        str(adapter_path),
         local_files_only=True,
     )
     model.generation_config.do_sample = False

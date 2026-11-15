@@ -258,6 +258,7 @@ def run_evaluation(quick: bool = False, retrain: bool = False) -> tuple[pd.DataF
         config["padding_values"],
         config["delay_values_ms"],
         variant_pairs=pairs,
+        delay_mode=str(config.get("delay_mode", "client_and_reply")),
     )
     manifest_path = variants_dir / "manifest.csv"
 

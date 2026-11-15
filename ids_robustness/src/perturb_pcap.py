@@ -131,8 +131,11 @@ def write_variant(
     output_path: str | Path,
     padding: int,
     delay_ms: int,
+    delay_mode: str = "client_and_reply",
 ) -> int:
     """Stream one PCAP variant to disk and return its number of packets."""
+    if delay_mode not in {"client_only", "client_and_reply"}:
+        raise ValueError(f"Unsupported delay mode: {delay_mode}")
     client_by_flow: dict[tuple, tuple[str, int]] = {}
     packet_counts: dict[tuple, int] = {}
     offsets: dict[tuple, float] = {}
@@ -183,10 +186,15 @@ def write_variant(
                     tcp.remove_payload()
                     tcp.add_payload(Raw(pad_payload(original_payload, padding)))
             else:
-                shift = offsets[flow_key]
-                effective_time = original_time + shift
-                if flow_key in latest_client_times:
-                    effective_time = max(effective_time, latest_client_times[flow_key])
+                effective_time = original_time
+                if delay_mode == "client_and_reply":
+                    shift = offsets[flow_key]
+                    effective_time += shift
+                    if flow_key in latest_client_times:
+                        effective_time = max(
+                            effective_time,
+                            latest_client_times[flow_key],
+                        )
             if frame_padding:
                 packet.add_payload(Padding(frame_padding))
             payload_padding = (
@@ -208,6 +216,7 @@ def generate_variants(
     padding_values: list[int],
     delay_values_ms: list[int],
     variant_pairs: list[dict[str, int]] | None = None,
+    delay_mode: str = "client_and_reply",
 ) -> list[dict[str, object]]:
     """Generate the configured PCAP grid and write its manifest."""
     if not has_client_payload(source_path):
@@ -231,6 +240,7 @@ def generate_variants(
             target_dir / filename,
             padding,
             delay_ms,
+            delay_mode,
         )
         manifest.append(
             {"file": filename, "padding": padding, "delay": delay_ms}
@@ -252,6 +262,7 @@ def main() -> None:
         output,
         config["padding_values"],
         config["delay_values_ms"],
+        delay_mode=str(config.get("delay_mode", "client_and_reply")),
     )
     for item in manifest:
         print(item)

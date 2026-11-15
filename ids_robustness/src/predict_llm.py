@@ -39,6 +39,10 @@ def load_finetuned_model() -> tuple[torch.nn.Module, object, str]:
         str(adapter_dir),
         local_files_only=True,
     )
+    model.generation_config.do_sample = False
+    model.generation_config.temperature = None
+    model.generation_config.top_p = None
+    model.generation_config.top_k = None
     model.eval()
     return model, tokenizer, device
 
@@ -80,6 +84,30 @@ def generate_answers(
     return predictions
 
 
+def predict_unique_prompts(
+    prompts: list[str],
+    model: torch.nn.Module,
+    tokenizer: object,
+    device: str,
+    batch_size: int,
+    max_new_tokens: int,
+    max_input_length: int,
+) -> list[str | None]:
+    """Generate each distinct prompt once and restore the original row order."""
+    unique_prompts = list(dict.fromkeys(prompts))
+    unique_predictions = generate_answers(
+        unique_prompts,
+        model=model,
+        tokenizer=tokenizer,
+        device=device,
+        batch_size=batch_size,
+        max_new_tokens=max_new_tokens,
+        max_input_length=max_input_length,
+    )
+    lookup = dict(zip(unique_prompts, unique_predictions))
+    return [lookup[prompt] for prompt in prompts]
+
+
 def predict_labels() -> tuple[pd.Series, pd.Series]:
     """Generate predictions and return integer classes plus their ground-truth labels."""
     config = load_config(ROOT / "config.yaml")
@@ -88,7 +116,7 @@ def predict_labels() -> tuple[pd.Series, pd.Series]:
     test_rows = split_map["test"]
     text_rows = build_text_rows(test_rows)
     model, tokenizer, device = load_finetuned_model()
-    names = generate_answers(
+    names = predict_unique_prompts(
         text_rows["text"].tolist(),
         model=model,
         tokenizer=tokenizer,

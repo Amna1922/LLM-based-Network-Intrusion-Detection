@@ -6,125 +6,225 @@ This file is regenerated from the Python docstrings in the src/ package.
 
 ## pcap_features.py
 
-Convert a PCAP into one-row-per-flow feature summaries without loading the whole file into memory.
+Extract unidirectional TCP flow features from PCAP and PCAPNG files.
 
-### extract_pcap_flowspcap_path: str | Path
+### `extract_pcap_flows(pcap_path: str | Path, duration_floor: float | None=None) -> pd.DataFrame`
 
-Read a PCAP in a streaming fashion and aggregate one row per unidirectional 5-tuple.
+Stream packets and aggregate features by unidirectional TCP 5-tuple.
+
+### `make_flow_table(stats: dict[tuple, dict[str, float]], duration_floor: float) -> pd.DataFrame`
+
+Build the feature table and derive stable bidirectional session IDs.
 
 ## perturb_pcap.py
 
-Apply padding and timing changes to a PCAP while preserving the flow metadata.
+Write padded and delayed PCAP variants using streaming Scapy readers and writers.
 
-### pad_payloadpayload: bytes, padding: int
+### `pad_payload(payload: bytes, padding: int) -> bytes`
 
-Return the payload with the requested number of trailing padding bytes added.
+Append the requested number of zero bytes to a TCP payload.
 
-### main
+### `packet_flow(packet: object) -> tuple[tuple[str, int], tuple[str, int], int] | None`
 
-Placeholder entry point for the PCAP perturbation workflow.
+Return a direction-independent TCP flow key and protocol number.
+
+### `tcp_payload_bytes(packet: object) -> bytes`
+
+Return TCP payload bytes excluding any captured link-layer padding.
+
+### `internet_checksum(data: bytes) -> int`
+
+Calculate an IPv4 or TCP one's-complement checksum.
+
+### `recompute_checksums(packet: object, ip_length: int) -> None`
+
+Set the declared IP length and calculate IPv4 and TCP checksums.
+
+### `has_client_payload(pcap_path: str | Path) -> bool`
+
+Check that at least one initial client SYN carries TCP payload.
+
+### `session_identifier(packet: object) -> str | None`
+
+Return the stable bidirectional TCP session ID for a packet.
+
+### `write_session_subset(source_path: str | Path, output_path: str | Path, session_ids: set[str]) -> int`
+
+Stream packets for the requested bidirectional sessions into a new PCAP.
+
+### `write_variant(source_path: str | Path, output_path: str | Path, padding: int, delay_ms: int) -> int`
+
+Stream one PCAP variant to disk and return its number of packets.
+
+### `generate_variants(source_path: str | Path, output_dir: str | Path, padding_values: list[int], delay_values_ms: list[int], variant_pairs: list[dict[str, int]] | None=None) -> list[dict[str, object]]`
+
+Generate the configured PCAP grid and write its manifest.
+
+### `main() -> None`
+
+Generate configured PCAP variants and print the manifest entries.
 
 ## predict_llm.py
 
 Generate Benign or DDoS predictions with a locally saved Qwen LoRA adapter.
 
-### parse_class_nameanswer: str
+### `parse_class_name(answer: str) -> str | None`
 
 Return the first valid class name in a generated answer, if present.
 
-### load_finetuned_model
+### `load_finetuned_model() -> tuple[torch.nn.Module, object, str]`
 
 Load the local base model and saved LoRA adapter for generation.
 
-### generate_answersprompts: list[str], model: torch.nn.Module, tokenizer: object, device: str, batch_size: int, max_new_tokens: int, max_input_length: int
+### `generate_answers(prompts: list[str], model: torch.nn.Module, tokenizer: object, device: str, batch_size: int, max_new_tokens: int, max_input_length: int) -> list[str | None]`
 
 Generate greedy answers in batches and parse the first valid class name.
 
-### predict_labels
+### `predict_unique_prompts(prompts: list[str], model: torch.nn.Module, tokenizer: object, device: str, batch_size: int, max_new_tokens: int, max_input_length: int) -> list[str | None]`
+
+Generate each distinct prompt once and restore the original row order.
+
+### `predict_labels() -> tuple[pd.Series, pd.Series]`
 
 Generate predictions and return integer classes plus their ground-truth labels.
 
-### main
+### `main() -> None`
 
 Print test predictions, invalid-answer count, and misclassification count.
 
 ## prepare_data.py
 
-Load the CSV, clean the features, split the flows, and write the domain-gap report.
+Prepare CSV or labeled PCAP flows, grouped splits, scaling, and audits.
 
-### _clean_frameframe: pd.DataFrame
+### `_clean_frame(frame: pd.DataFrame, duration_floor: float) -> pd.DataFrame`
 
-Drop unneeded columns, fix the duration field, and remove invalid rows.
+Keep model features and flow IDs, derive duration and recompute rates.
 
-### print_label_evidenceframe: pd.DataFrame
+### `print_label_evidence(frame: pd.DataFrame) -> None`
 
-Print the label counts and the evidence that label 1 is the DDoS class.
+Print the CSV label counts and evidence that label 1 is TCP DDoS.
 
-### build_domain_gapcsv_frame: pd.DataFrame, pcap_frame: pd.DataFrame
+### `transform_features(frame: pd.DataFrame) -> pd.DataFrame`
 
-Compare the feature ranges for CSV attack rows and pcap-derived flows.
+Apply the shared log1p transform to count, duration, and rate features.
 
-### stratified_group_splitframe: pd.DataFrame, seed: int=42
+### `build_domain_gap(csv_frame: pd.DataFrame, pcap_frame: pd.DataFrame) -> pd.DataFrame`
 
-Split flow IDs into train, validation, and test sets while preserving label balance.
+Compare log-transformed feature ranges for CSV attacks and PCAP flows.
 
-### build_text_rowsframe: pd.DataFrame
+### `stratified_group_split(frame: pd.DataFrame, seed: int=42, group_column: str='flow_id') -> dict[str, pd.DataFrame]`
 
-Convert each row into a single prompt string with normalised feature values.
+Create a stratified 70/10/20 split without splitting any group.
 
-### prepare_datasetcsv_path: str | Path
+### `find_benign_pcaps(folder: str | Path) -> list[Path]`
 
-Load the CSV, clean it, build the train/val/test splits, and calculate the domain gap.
+Return all PCAP and PCAPNG paths in the benign capture folder.
+
+### `cap_rows_by_session(frame: pd.DataFrame, max_rows: int, seed: int) -> pd.DataFrame`
+
+Select whole sessions up to a row cap, alternating labels for balance.
+
+### `build_pcap_dataset(attack_pcap: str | Path, benign_pcaps: list[Path], duration_floor: float) -> pd.DataFrame`
+
+Combine attack and benign PCAP flows without including CSV rows.
+
+### `shortcut_audit(training_frame: pd.DataFrame, seed: int) -> pd.DataFrame`
+
+Measure best one-feature decision-stump accuracy on training data.
+
+### `build_text_rows(frame: pd.DataFrame) -> pd.DataFrame`
+
+Format normalized feature values as classifier prompts.
+
+### `prepare_dataset(csv_path: str | Path | None=None) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[str, pd.DataFrame], pd.DataFrame]`
+
+Build the primary dataset, grouped splits, scaler, domain gap, and audit.
 
 ## run_eval.py
 
-Run the requested evaluation pass and emit the report and metric output files.
+Run preparation, training, PCAP perturbation, validation, prediction, and reporting.
 
-### run_evaluation
+### `scale_flow_frame(frame: pd.DataFrame, scaler: object) -> pd.DataFrame`
 
-Train a quick model, score the test split, and write the results documents.
+Apply the saved log transform and training scaler to raw flow features.
 
-### main
+### `sample_rows(frame: pd.DataFrame, limit: int, seed: int) -> pd.DataFrame`
 
-Run the evaluation workflow and print the metric summary.
+Select a seeded random sample no larger than the requested row limit.
+
+### `select_attack_flows(attacks: pd.DataFrame, prepared: tuple, source: str, attack_path: Path, limit: int, seed: int) -> pd.DataFrame`
+
+Restrict PCAP-primary runs to test attack sessions and sample test flows.
+
+### `detection_summary(predictions: list[str | None], seed: int, resamples: int, confidence: float) -> dict[str, float | int]`
+
+Calculate detection rate and a percentile bootstrap confidence interval.
+
+### `metric_row(metric: str, variant: str, values: dict[str, float | int], baseline_rate: float | None=None) -> dict[str, object]`
+
+Create one standardized result row for the metrics CSV.
+
+### `load_training_summary(path: Path) -> dict[str, str]`
+
+Read key-value training metadata from the training log.
+
+### `package_versions() -> dict[str, str]`
+
+Read installed versions for the report.
+
+### `format_table(frame: pd.DataFrame) -> str`
+
+Format a result frame as a Markdown table.
+
+### `write_report(config: dict, device: str, source: str, training: dict[str, str], test_metrics: pd.DataFrame, detection_metrics: pd.DataFrame, functionality: pd.DataFrame, domain_gap: pd.DataFrame, shortcut_audit: pd.DataFrame, duplicate_vectors: int, invalid_outputs: int, warning: str | None, report_path: Path) -> str`
+
+Write all measured evaluation results and limitations to Markdown.
+
+### `run_evaluation(quick: bool=False, retrain: bool=False) -> tuple[pd.DataFrame, str]`
+
+Execute the full evaluation pipeline and write its result files.
+
+### `main() -> None`
+
+Parse quick and retrain flags, then run the evaluation pipeline.
 
 ## train_llm.py
 
 Fine-tune Qwen with LoRA on flow prompts and answer-only causal-language loss.
 
-### load_base_modelmodel_name: str, device: str, training: bool=False
+### `load_base_model(model_name: str, device: str, training: bool=False) -> tuple[torch.nn.Module, object]`
 
 Load the configured base model and download it from Hugging Face if needed.
 
-### sample_training_rowsframe: pd.DataFrame, row_limit: int, seed: int
+### `sample_training_rows(frame: pd.DataFrame, row_limit: int, seed: int) -> pd.DataFrame`
 
 Select a reproducible, approximately class-balanced training subset.
 
-### build_training_examplestokenizer: object, text_rows: pd.DataFrame, max_length: int
+### `build_training_examples(tokenizer: object, text_rows: pd.DataFrame, max_length: int) -> list[dict[str, list[int]]]`
 
 Tokenize prompts and mask all labels except the class answer and its EOS.
 
-### make_collatortokenizer: object
+### `make_collator(tokenizer: object)`
 
 Create a dynamic-padding collator that ignores prompt tokens in the loss.
 
-### build_training_argumentsconfig: dict, quick: bool, device: str
+### `build_training_arguments(config: dict, quick: bool, device: str) -> TrainingArguments`
 
 Create training settings for the quick, CPU, or CUDA run.
 
-### build_trainermodel: torch.nn.Module, tokenizer: object, examples: list[dict[str, list[int]]], arguments: TrainingArguments
+### `build_trainer(model: torch.nn.Module, tokenizer: object, examples: list[dict[str, list[int]]], arguments: TrainingArguments) -> Trainer`
 
 Create a Trainer with answer-only labels and dynamic batch padding.
 
-### save_training_artifactsmodel: torch.nn.Module, tokenizer: object, trainer: Trainer, training_loss: float, device: str, quick: bool, row_count: int, epoch_count: int
+### `save_training_artifacts(model: torch.nn.Module, tokenizer: object, trainer: Trainer, training_loss: float, device: str, quick: bool, row_count: int, epoch_count: int) -> dict[str, object]`
 
 Save the LoRA adapter and write the training summary.
 
-### train_modelquick: bool=False
+### `train_model(quick: bool=False, prepared_data: tuple | None=None) -> dict[str, object]`
 
 Fine-tune and save a LoRA adapter using the configured CPU or CUDA settings.
 
-### main
+### `main() -> None`
 
 Parse command-line options and start the requested training run.
 
@@ -132,31 +232,59 @@ Parse command-line options and start the requested training run.
 
 Utility helpers for the IDS robustness project.
 
-### resolve_pathpath: str | Path
+### `resolve_path(path: str | Path) -> Path`
 
 Resolve a repo-relative path to an absolute path.
 
-### load_configpath: str | Path | None=None
+### `load_config(path: str | Path | None=None) -> dict`
 
 Load the project configuration from YAML.
 
-### set_seedseed: int
+### `set_seed(seed: int) -> None`
 
 Set Python, NumPy, and PyTorch seeds for reproducible runs.
 
-### pick_device
+### `pick_device() -> str`
 
 Return the target compute device for training and inference.
 
 ## validate.py
 
-Validate invariant fields and SYN-flood properties for perturbed PCAP variants.
+Check PCAP flow invariants, SYN-flood functionality, and packet checksums.
 
-### invariant_mismatch_columnsoriginal: pd.DataFrame, altered: pd.DataFrame
+### `invariant_mismatch_columns(original: pd.DataFrame, altered: pd.DataFrame) -> list[str]`
 
-Return the names of invariant columns whose values changed between two flow tables.
+Return invariant columns that differ for aligned flow rows.
 
-### main
+### `collect_packet_facts(pcap_path: str | Path) -> dict[str, object]`
 
-Placeholder validation entry point.
+Stream a PCAP and count flags, SYN tuples/times, and invalid checksums.
+
+### `packet_checksums_valid(packet: object) -> bool`
+
+Check stored IPv4 and TCP checksums using the packet bytes.
+
+### `internet_checksum(data: bytes) -> int`
+
+Return the one's-complement checksum of a byte sequence.
+
+### `peak_syn_rate(syn_times: list[float], window_seconds: float=0.1) -> int`
+
+Return the largest number of SYNs in any sliding time window.
+
+### `check_variant_functionality(original_facts: dict[str, object], variant_facts: dict[str, object], min_peak_rate_ratio: float, peak_window_seconds: float=0.1) -> dict[str, object]`
+
+Check SYN counts, tuples, reset replies, peak rate, and checksums.
+
+### `validate_variants(original_path: str | Path, manifest_path: str | Path, variants_dir: str | Path, output_path: str | Path, min_peak_rate_ratio: float, peak_window_seconds: float=0.1) -> pd.DataFrame`
+
+Run functionality and invariant gates for every manifest variant.
+
+### `facts_to_frame(flows: dict[tuple, dict[str, int]]) -> pd.DataFrame`
+
+Convert per-direction packet facts to a table with full tuple columns.
+
+### `main() -> None`
+
+Validate all generated PCAP variants using configured thresholds.
 

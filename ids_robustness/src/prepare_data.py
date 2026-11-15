@@ -1,21 +1,21 @@
-"""Load the CSV, clean the features, split the flows, and write the domain-gap report."""
+"""Prepare CSV or labeled PCAP flows, grouped splits, scaling, and audits."""
 
 from __future__ import annotations
 
-import csv
 from pathlib import Path
 
+import joblib
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import StratifiedShuffleSplit
 from sklearn.preprocessing import StandardScaler
+from sklearn.tree import DecisionTreeClassifier
 
-from src.pcap_features import extract_pcap_flows
+from src.pcap_features import FEATURE_COLUMNS, extract_pcap_flows
 from src.utils import ROOT, load_config, resolve_path
 
-FEATURES = [
-    "ip_proto",
-    "tp_dst",
+FEATURES = FEATURE_COLUMNS
+LOG_FEATURES = [
     "packet_count",
     "byte_count",
     "flow_duration",
@@ -24,123 +24,284 @@ FEATURES = [
 ]
 
 
-def _clean_frame(frame: pd.DataFrame) -> pd.DataFrame:
-    """Drop unneeded columns, fix the duration field, and remove invalid rows."""
+def _clean_frame(frame: pd.DataFrame, duration_floor: float) -> pd.DataFrame:
+    """Keep model features and flow IDs, derive duration and recompute rates."""
     cleaned = frame.copy()
-    cleaned = cleaned.drop(columns=["timestamp", "datapath_id", "ip_src", "tp_src", "ip_dst", "icmp_code", "icmp_type", "idle_timeout", "hard_timeout", "flags"], errors="ignore")
-    cleaned["flow_duration"] = cleaned["flow_duration_sec"].astype(float) + cleaned["flow_duration_nsec"].astype(float) / 1_000_000_000.0
-    cleaned = cleaned.drop(columns=["flow_duration_sec", "flow_duration_nsec"], errors="ignore")
-    cleaned = cleaned.replace([np.inf, -np.inf], np.nan).dropna()
+    cleaned["flow_duration"] = (
+        cleaned["flow_duration_sec"].astype(float)
+        + cleaned["flow_duration_nsec"].astype(float) / 1_000_000_000.0
+    ).clip(lower=duration_floor)
+    cleaned["packet_count_per_second"] = (
+        cleaned["packet_count"].astype(float) / cleaned["flow_duration"]
+    )
+    cleaned["byte_count_per_second"] = (
+        cleaned["byte_count"].astype(float) / cleaned["flow_duration"]
+    )
+    keep = [column for column in ["flow_id", *FEATURES, "label"] if column in cleaned]
+    cleaned = cleaned[keep].replace([np.inf, -np.inf], np.nan).dropna()
     return cleaned
 
 
 def print_label_evidence(frame: pd.DataFrame) -> None:
-    """Print the label counts and the evidence that label 1 is the DDoS class."""
+    """Print the CSV label counts and evidence that label 1 is TCP DDoS."""
     counts = frame["label"].value_counts().sort_index()
-    print("Label evidence:")
+    print("CSV label evidence:")
     for label, count in counts.items():
-        label_name = "Benign" if label == 0 else "DDoS"
-        print(f"  label {label}: {count} rows -> {label_name}")
-    label_1 = frame[frame["label"] == 1]
-    print(f"  all label 1 rows are TCP: {label_1['ip_proto'].nunique()} unique proto values -> {sorted(label_1['ip_proto'].unique().tolist())[:5]}")
-    print(f"  label 1 TCP packets median: {label_1['packet_count'].median():.2f}, byte_count median: {label_1['byte_count'].median():.2f}")
+        class_name = "Benign" if label == 0 else "DDoS"
+        print(f"  label {label}: {count} rows -> {class_name}")
+    attacks = frame[frame["label"] == 1]
+    print(
+        "  label 1 protocol values: "
+        f"{sorted(attacks['ip_proto'].unique().tolist())}"
+    )
+    print(
+        f"  label 1 packet/byte medians: "
+        f"{attacks['packet_count'].median():.2f}/"
+        f"{attacks['byte_count'].median():.2f}"
+    )
 
 
-def build_domain_gap(csv_frame: pd.DataFrame, pcap_frame: pd.DataFrame) -> pd.DataFrame:
-    """Compare the feature ranges for CSV attack rows and pcap-derived flows."""
-    attack_rows = csv_frame[csv_frame["label"] == 1].copy()
-    gap_rows = []
+def transform_features(frame: pd.DataFrame) -> pd.DataFrame:
+    """Apply the shared log1p transform to count, duration, and rate features."""
+    transformed = frame[FEATURES].astype(float).copy()
+    for column in LOG_FEATURES:
+        transformed[column] = np.log1p(transformed[column].clip(lower=0))
+    return transformed
+
+
+def build_domain_gap(
+    csv_frame: pd.DataFrame,
+    pcap_frame: pd.DataFrame,
+) -> pd.DataFrame:
+    """Compare log-transformed feature ranges for CSV attacks and PCAP flows."""
+    csv_attack = transform_features(csv_frame[csv_frame["label"] == 1])
+    pcap_values = transform_features(pcap_frame)
+    rows = []
     for feature in FEATURES:
-        csv_values = attack_rows[feature].astype(float)
-        pcap_values = pcap_frame[feature].astype(float)
-        gap_rows.append(
+        csv_values = csv_attack[feature]
+        pcap_column = pcap_values[feature]
+        rows.append(
             {
                 "feature": feature,
                 "csv_min": float(csv_values.min()),
                 "csv_median": float(csv_values.median()),
                 "csv_max": float(csv_values.max()),
-                "pcap_min": float(pcap_values.min()),
-                "pcap_median": float(pcap_values.median()),
-                "pcap_max": float(pcap_values.max()),
+                "pcap_min": float(pcap_column.min()),
+                "pcap_median": float(pcap_column.median()),
+                "pcap_max": float(pcap_column.max()),
             }
         )
-    return pd.DataFrame(gap_rows)
+    return pd.DataFrame(rows)
 
 
-def stratified_group_split(frame: pd.DataFrame, seed: int = 42) -> dict[str, pd.DataFrame]:
-    """Split flow IDs into train, validation, and test sets while preserving label balance."""
-    flow_labels = frame.groupby("flow_id")["label"].first().reset_index()
-    flow_ids = flow_labels["flow_id"].tolist()
-    labels = flow_labels["label"].tolist()
-
-    test_size = max(2, int(round(len(flow_ids) * 0.2)))
-    if test_size >= len(flow_ids):
-        test_size = len(flow_ids) - 1
-    splitter_test = StratifiedShuffleSplit(n_splits=1, test_size=test_size / len(flow_ids), random_state=seed)
-    train_val_ids, test_ids = next(splitter_test.split(flow_ids, labels))
-    train_val_flow_ids = [flow_ids[i] for i in train_val_ids]
-    test_flow_ids = [flow_ids[i] for i in test_ids]
-
-    train_val_labels = [labels[i] for i in train_val_ids]
-    if len(train_val_flow_ids) < 4:
-        train_flow_ids = train_val_flow_ids
-        val_flow_ids = []
-    else:
-        splitter_val = StratifiedShuffleSplit(n_splits=1, test_size=1 / 9, random_state=seed)
-        train_ids, val_ids = next(splitter_val.split(train_val_flow_ids, train_val_labels))
-        train_flow_ids = [train_val_flow_ids[i] for i in train_ids]
-        val_flow_ids = [train_val_flow_ids[i] for i in val_ids]
-
-    split_map = {
-        "train": frame[frame["flow_id"].isin(train_flow_ids)].copy(),
-        "val": frame[frame["flow_id"].isin(val_flow_ids)].copy(),
-        "test": frame[frame["flow_id"].isin(test_flow_ids)].copy(),
+def stratified_group_split(
+    frame: pd.DataFrame,
+    seed: int = 42,
+    group_column: str = "flow_id",
+) -> dict[str, pd.DataFrame]:
+    """Create a stratified 70/10/20 split without splitting any group."""
+    group_labels = frame.groupby(group_column)["label"].first().reset_index()
+    groups = group_labels[group_column].tolist()
+    labels = group_labels["label"].tolist()
+    if len(groups) < 3 or min(pd.Series(labels).value_counts()) < 2:
+        raise ValueError("Each class needs at least two groups for a grouped split.")
+    test_size = max(2, round(len(groups) * 0.2))
+    test_splitter = StratifiedShuffleSplit(
+        n_splits=1,
+        test_size=test_size / len(groups),
+        random_state=seed,
+    )
+    train_val_idx, test_idx = next(test_splitter.split(groups, labels))
+    train_val_groups = [groups[index] for index in train_val_idx]
+    train_val_labels = [labels[index] for index in train_val_idx]
+    test_groups = [groups[index] for index in test_idx]
+    if len(train_val_groups) < 4:
+        return {
+            "train": frame[frame[group_column].isin(train_val_groups)].copy(),
+            "val": frame.iloc[0:0].copy(),
+            "test": frame[frame[group_column].isin(test_groups)].copy(),
+        }
+    val_size = max(2, round(len(groups) * 0.1))
+    val_fraction = val_size / len(train_val_groups)
+    val_splitter = StratifiedShuffleSplit(
+        n_splits=1,
+        test_size=val_fraction,
+        random_state=seed,
+    )
+    train_idx, val_idx = next(val_splitter.split(train_val_groups, train_val_labels))
+    train_groups = [train_val_groups[index] for index in train_idx]
+    val_groups = [train_val_groups[index] for index in val_idx]
+    return {
+        "train": frame[frame[group_column].isin(train_groups)].copy(),
+        "val": frame[frame[group_column].isin(val_groups)].copy(),
+        "test": frame[frame[group_column].isin(test_groups)].copy(),
     }
-    return split_map
+
+
+def find_benign_pcaps(folder: str | Path) -> list[Path]:
+    """Return all PCAP and PCAPNG paths in the benign capture folder."""
+    path = Path(folder)
+    if not path.is_dir():
+        return []
+    return sorted(
+        item
+        for item in path.iterdir()
+        if item.is_file() and item.suffix.lower() in {".pcap", ".pcapng"}
+    )
+
+
+def cap_rows_by_session(
+    frame: pd.DataFrame,
+    max_rows: int,
+    seed: int,
+) -> pd.DataFrame:
+    """Select whole sessions up to a row cap, alternating labels for balance."""
+    if len(frame) <= max_rows:
+        return frame.copy()
+    by_label = {
+        int(label): group["session_id"].drop_duplicates().sample(
+            frac=1,
+            random_state=seed,
+        ).tolist()
+        for label, group in frame.groupby("label")
+    }
+    selected: list[str] = []
+    selected_count = 0
+    labels = sorted(by_label)
+    cursors = {label: 0 for label in labels}
+    while selected_count < max_rows and any(
+        cursors[label] < len(by_label[label]) for label in labels
+    ):
+        for label in labels:
+            if cursors[label] >= len(by_label[label]):
+                continue
+            session = by_label[label][cursors[label]]
+            cursors[label] += 1
+            session_count = int((frame["session_id"] == session).sum())
+            if selected_count + session_count <= max_rows:
+                selected.append(session)
+                selected_count += session_count
+    return frame[frame["session_id"].isin(selected)].copy()
+
+
+def build_pcap_dataset(
+    attack_pcap: str | Path,
+    benign_pcaps: list[Path],
+    duration_floor: float,
+) -> pd.DataFrame:
+    """Combine attack and benign PCAP flows without including CSV rows."""
+    attacks = extract_pcap_flows(attack_pcap, duration_floor)
+    attacks["label"] = 1
+    benign_tables = []
+    for path in benign_pcaps:
+        flows = extract_pcap_flows(path, duration_floor)
+        flows["label"] = 0
+        flows["source_file"] = path.name
+        flows["session_id"] = path.name + "|" + flows["session_id"]
+        benign_tables.append(flows)
+    attacks["source_file"] = Path(attack_pcap).name
+    attacks["session_id"] = Path(attack_pcap).name + "|" + attacks["session_id"]
+    return pd.concat([attacks, *benign_tables], ignore_index=True)
+
+
+def shortcut_audit(training_frame: pd.DataFrame, seed: int) -> pd.DataFrame:
+    """Measure best one-feature decision-stump accuracy on training data."""
+    rows = []
+    labels = training_frame["label"].astype(int)
+    for feature in FEATURES:
+        model = DecisionTreeClassifier(max_depth=1, random_state=seed)
+        model.fit(training_frame[[feature]], labels)
+        accuracy = float(model.score(training_frame[[feature]], labels))
+        rows.append({"feature": feature, "single_feature_accuracy": accuracy})
+        print(f"Shortcut audit {feature}: accuracy={accuracy:.6f}")
+        if accuracy > 0.99:
+            print(f"WARNING: {feature} alone has accuracy above 0.99.")
+    return pd.DataFrame(rows)
 
 
 def build_text_rows(frame: pd.DataFrame) -> pd.DataFrame:
-    """Convert each row into a single prompt string with normalised feature values."""
+    """Format normalized feature values as classifier prompts."""
     text_rows = []
-    for _, row in frame.iterrows():
-        items = []
-        for feature in FEATURES:
-            value = float(row[feature])
-            items.append(f"{feature}: {value:.4f}")
-        text_rows.append({
-            "text": "Classify this network flow as Benign or DDoS. Flow: " + ", ".join(items),
-            "label": int(row["label"]),
-        })
-    return pd.DataFrame(text_rows)
+    for row in frame.itertuples(index=False):
+        values = [f"{name}: {getattr(row, name):.4f}" for name in FEATURES]
+        text_rows.append(
+            {
+                "text": "Classify this network flow as Benign or DDoS. Flow: "
+                + ", ".join(values),
+                "label": int(row.label),
+            }
+        )
+    return pd.DataFrame(text_rows, index=frame.index)
 
 
-def prepare_dataset(csv_path: str | Path) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[str, pd.DataFrame], pd.DataFrame]:
-    """Load the CSV, clean it, build the train/val/test splits, and calculate the domain gap."""
-    config = load_config(ROOT / "config.yaml")
-    raw = pd.read_csv(csv_path)
-    clean = _clean_frame(raw)
-    clean = clean[clean["label"].isin([0, 1])].copy()
-    clean["label"] = clean["label"].astype(int)
+def prepare_dataset(
+    csv_path: str | Path | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict[str, pd.DataFrame], pd.DataFrame]:
+    """Build the primary dataset, grouped splits, scaler, domain gap, and audit."""
+    config = load_config()
+    csv_path = resolve_path(csv_path or config["csv_path"])
+    duration_floor = float(config["duration_floor"])
+    raw_csv = pd.read_csv(csv_path)
+    csv_frame = _clean_frame(raw_csv, duration_floor)
+    csv_frame = csv_frame[csv_frame["label"].isin([0, 1])].copy()
+    csv_frame["label"] = csv_frame["label"].astype(int)
+    print_label_evidence(csv_frame)
 
-    print_label_evidence(clean)
-    pcap_features = extract_pcap_flows(resolve_path(config["pcap_path"]))
-    gap = build_domain_gap(clean, pcap_features)
-    gap_path = ROOT / "results" / "domain_gap.csv"
-    gap.to_csv(gap_path, index=False)
-    print(f"Domain gap written to {gap_path}")
-    print(gap.to_string(index=False))
+    attack_path = resolve_path(config["pcap_path"])
+    attack_flows = extract_pcap_flows(attack_path, duration_floor)
+    domain_gap = build_domain_gap(csv_frame, attack_flows)
+    domain_gap.to_csv(ROOT / "results" / "domain_gap.csv", index=False)
+    print("Domain gap:")
+    print(domain_gap.to_string(index=False))
 
-    split_map = stratified_group_split(clean, seed=int(config["seed"]))
-    scaler = StandardScaler()
-    for name, subset in split_map.items():
-        subset[FEATURES] = scaler.fit_transform(subset[FEATURES]) if name == "train" else scaler.transform(subset[FEATURES])
-    duplicate_count = set(tuple(row) for _, row in split_map["train"][FEATURES].iterrows()) & set(tuple(row) for _, row in split_map["test"][FEATURES].iterrows())
-    print(f"Duplicate feature vectors between train and test: {len(duplicate_count)}")
+    benign_paths = find_benign_pcaps(resolve_path(config["benign_pcap_dir"]))
+    if benign_paths:
+        source = "pcap"
+        primary = build_pcap_dataset(attack_path, benign_paths, duration_floor)
+        primary = cap_rows_by_session(
+            primary,
+            int(config["max_rows"]),
+            int(config["seed"]),
+        )
+        group_column = "session_id"
+    else:
+        source = "csv"
+        primary = csv_frame
+        group_column = "flow_id"
+        print("No benign PCAP files found; using CSV-only training data.")
 
-    return clean, pcap_features, gap, split_map, pd.DataFrame({})
+    splits = stratified_group_split(
+        primary,
+        seed=int(config["seed"]),
+        group_column=group_column,
+    )
+    train_values = transform_features(splits["train"])
+    scaler = StandardScaler().fit(train_values)
+    for name, subset in splits.items():
+        values = transform_features(subset)
+        scaled = pd.DataFrame(
+            scaler.transform(values),
+            columns=FEATURES,
+            index=subset.index,
+        )
+        splits[name] = pd.concat([subset.drop(columns=FEATURES), scaled], axis=1)
+        ordered = [column for column in subset.columns if column not in FEATURES]
+        splits[name] = splits[name][ordered + FEATURES]
+    joblib.dump(scaler, ROOT / "results" / "feature_scaler.joblib")
+
+    train_vectors = set(map(tuple, splits["train"][FEATURES].to_numpy()))
+    test_vectors = set(map(tuple, splits["test"][FEATURES].to_numpy()))
+    duplicates = len(train_vectors & test_vectors)
+    print(f"Duplicate feature vectors between train and test: {duplicates}")
+    audit = shortcut_audit(splits["train"], int(config["seed"]))
+    audit.to_csv(ROOT / "results" / "shortcut_audit.csv", index=False)
+    audit.attrs["source"] = source
+    audit.attrs["group_column"] = group_column
+    audit.attrs["duplicate_count"] = duplicates
+    audit.attrs["train_rows"] = len(splits["train"])
+    audit.attrs["csv_rows"] = len(csv_frame)
+    return primary, attack_flows, domain_gap, splits, audit
 
 
 if __name__ == "__main__":
-    config = load_config(ROOT / "config.yaml")
-    csv_path = resolve_path(config["csv_path"])
-    prepare_dataset(csv_path)
+    prepare_dataset()

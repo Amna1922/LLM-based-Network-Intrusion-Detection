@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import time
 
 import pandas as pd
 import torch
@@ -11,6 +12,7 @@ from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     Trainer,
+    TrainerCallback,
     TrainingArguments,
 )
 
@@ -158,7 +160,35 @@ def build_trainer(
         train_dataset=examples,
         data_collator=make_collator(tokenizer),
         tokenizer=tokenizer,
+        callbacks=[TrainingProgressCallback()],
     )
+
+
+class TrainingProgressCallback(TrainerCallback):
+    """Print step loss and an elapsed-time estimate during fine-tuning."""
+
+    def __init__(self) -> None:
+        """Initialize the timer used to estimate remaining training time."""
+        self.started_at = 0.0
+
+    def on_train_begin(self, args, state, control, **kwargs):
+        """Start the training timer."""
+        self.started_at = time.monotonic()
+        return control
+
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        """Print the current step, loss, and estimated time remaining."""
+        if not logs or "loss" not in logs:
+            return control
+        elapsed = time.monotonic() - self.started_at
+        steps = max(int(state.global_step), 1)
+        remaining_steps = max(int(state.max_steps) - steps, 0)
+        eta = elapsed / steps * remaining_steps
+        print(
+            f"Training progress: step {state.global_step}/{state.max_steps}, "
+            f"loss={logs['loss']:.6f}, ETA={eta:.0f}s"
+        )
+        return control
 
 
 def save_training_artifacts(
@@ -194,13 +224,17 @@ def save_training_artifacts(
     }
 
 
-def train_model(quick: bool = False) -> dict[str, object]:
+def train_model(
+    quick: bool = False,
+    prepared_data: tuple | None = None,
+) -> dict[str, object]:
     """Fine-tune and save a LoRA adapter using the configured CPU or CUDA settings."""
     config = load_config(ROOT / "config.yaml")
     set_seed(int(config["seed"]))
     device = pick_device()
     print(f"Device: {device}")
-    _, _, _, split_map, _ = prepare_dataset(resolve_path(config["csv_path"]))
+    data = prepared_data or prepare_dataset(resolve_path(config["csv_path"]))
+    _, _, _, split_map, _ = data
     row_limit = int(config["quick_train_rows"]) if quick else int(config["max_train_rows"])
     if not quick and device == "cpu":
         row_limit = min(row_limit, int(config["cpu_max_train_rows"]))

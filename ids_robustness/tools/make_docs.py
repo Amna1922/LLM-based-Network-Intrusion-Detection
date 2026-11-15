@@ -17,7 +17,9 @@ def _module_doc(path: Path) -> str:
 def _function_info(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
     """Render a function signature and docstring."""
     args = ast.unparse(node.args)
-    return f"### {node.name}{args}\n\n{ast.get_docstring(node) or 'No function docstring provided.'}\n"
+    returns = f" -> {ast.unparse(node.returns)}" if node.returns else ""
+    signature = f"{node.name}({args}){returns}"
+    return f"### `{signature}`\n\n{ast.get_docstring(node) or 'No function docstring provided.'}\n"
 
 
 def build_guide() -> str:

@@ -5,13 +5,19 @@ results_dir: results
 csv_path: ../data/FlowStatsfile_modified_eval.csv
 pcap_path: ../data/CIC-DDoS-2019-SynFlood_modified.pcap
 model_name: Qwen/Qwen2.5-0.5B-Instruct
-max_train_rows: 2000
+max_rows: 4000
+max_train_rows: 4000
 cpu_max_train_rows: 500
-epochs: 3
+epochs: 2
 quick_mode: false
 quick_train_rows: 200
 quick_epochs: 1
 quick_max_steps: 2
+quick_eval_flows: 100
+quick_variant_count: 2
+quick_variants:
+  - {padding: 16, delay: 0}
+  - {padding: 0, delay: 50}
 lora_rank: 16
 lora_alpha: 32
 lora_dropout: 0.05
@@ -25,8 +31,13 @@ cpu_gradient_accumulation_steps: 16
 max_seq_length: 256
 max_new_tokens: 16
 prediction_batch_size: 16
+duration_floor: 0.000001
+benign_pcap_dir: ../data/benign_pcaps
 min_baseline_detection: 0.5
 min_peak_rate_ratio: 0.5
+peak_window_ms: 100
 padding_values: [0, 16, 64]
 delay_values_ms: [0, 50, 100]
 max_eval_flows: 2000
+bootstrap_resamples: 1000
+bootstrap_confidence: 0.95

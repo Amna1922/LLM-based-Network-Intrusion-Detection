@@ -21,15 +21,14 @@ If you use CUDA, install the CUDA build of PyTorch. For a GTX 1650 Ti, the cu121
 
 ## Run commands
 ```bash
-python -m src.prepare_data
-python -m src.pcap_features
 python -m pytest -q
-python -m src.train_llm --quick
-python -m src.predict_llm
+python -m src.run_eval --quick
 python -m src.run_eval
 ```
 
-Results are written under `results/` and docs under `docs/`.
+The quick run reuses an existing LoRA adapter when available, evaluates 100 flows, and uses two perturbation variants. Use `python -m src.run_eval --quick --retrain` to retrain for the smoke test. The full run uses the configured defaults and reuses the adapter unless `--retrain` is supplied.
+
+Results are written under `results/` and docs under `docs/`. Place benign `.pcap` or `.pcapng` files in `../data/benign_pcaps/` to train and evaluate using PCAP flows. If that directory has no captures, the project uses the CSV-only fallback and reports the source mismatch.
 
 ## Regenerate docs
 ```bash

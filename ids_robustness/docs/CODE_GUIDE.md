@@ -128,7 +128,11 @@ Select whole sessions up to a row cap, alternating labels for balance.
 
 Combine attack and benign PCAP flows without including CSV rows.
 
-### `shortcut_audit(training_frame: pd.DataFrame, seed: int) -> pd.DataFrame`
+### `print_class_feature_summary(frame: pd.DataFrame) -> None`
+
+Print raw feature median and range for each PCAP dataset class.
+
+### `shortcut_audit(training_frame: pd.DataFrame, seed: int, source: str) -> pd.DataFrame`
 
 Measure best one-feature decision-stump accuracy on training data.
 

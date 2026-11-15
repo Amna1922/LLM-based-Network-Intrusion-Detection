@@ -204,10 +204,31 @@ def build_pcap_dataset(
     return pd.concat([attacks, *benign_tables], ignore_index=True)
 
 
-def shortcut_audit(training_frame: pd.DataFrame, seed: int) -> pd.DataFrame:
+def print_class_feature_summary(frame: pd.DataFrame) -> None:
+    """Print raw feature median and range for each PCAP dataset class."""
+    print("PCAP feature summary by class (raw units, after row cap):")
+    for label, class_name in ((0, "Benign"), (1, "DDoS")):
+        class_frame = frame[frame["label"] == label]
+        for feature in FEATURES:
+            values = class_frame[feature]
+            print(
+                f"  {class_name} {feature}: median={values.median():.6g}, "
+                f"min={values.min():.6g}, max={values.max():.6g}"
+            )
+
+
+def shortcut_audit(
+    training_frame: pd.DataFrame,
+    seed: int,
+    source: str,
+) -> pd.DataFrame:
     """Measure best one-feature decision-stump accuracy on training data."""
     rows = []
     labels = training_frame["label"].astype(int)
+    print(
+        "Shortcut audit training split: "
+        f"source={source.upper()}, rows={len(training_frame)}"
+    )
     for feature in FEATURES:
         model = DecisionTreeClassifier(max_depth=1, random_state=seed)
         model.fit(training_frame[[feature]], labels)
@@ -254,10 +275,26 @@ def prepare_dataset(
     print("Domain gap:")
     print(domain_gap.to_string(index=False))
 
-    benign_paths = find_benign_pcaps(resolve_path(config["benign_pcap_dir"]))
+    benign_dir = resolve_path(config["benign_pcap_dir"])
+    benign_paths = find_benign_pcaps(benign_dir)
+    print(f"Benign PCAP folder checked: {benign_dir}")
+    if benign_paths:
+        print("Benign PCAP files found:")
+        for path in benign_paths:
+            print(f"  - {path.name} ({path.stat().st_size:,} bytes)")
+    else:
+        print("Benign PCAP files found: none")
+
     if benign_paths:
         source = "pcap"
+        print("Primary dataset source: PCAP")
         primary = build_pcap_dataset(attack_path, benign_paths, duration_floor)
+        raw_counts = primary["label"].value_counts()
+        print(
+            "PCAP flows extracted before row cap: "
+            f"Benign={int(raw_counts.get(0, 0))}, "
+            f"DDoS={int(raw_counts.get(1, 0))}"
+        )
         primary = cap_rows_by_session(
             primary,
             int(config["max_rows"]),
@@ -266,15 +303,40 @@ def prepare_dataset(
         group_column = "session_id"
     else:
         source = "csv"
+        print("Primary dataset source: CSV")
         primary = csv_frame
         group_column = "flow_id"
-        print("No benign PCAP files found; using CSV-only training data.")
+
+    primary_counts = primary["label"].value_counts()
+    unit = "flows" if source == "pcap" else "rows"
+    print(
+        f"Primary dataset {unit} after cap: "
+        f"Benign={int(primary_counts.get(0, 0))}, "
+        f"DDoS={int(primary_counts.get(1, 0))}, total={len(primary)}"
+    )
+    if source == "pcap":
+        print_class_feature_summary(primary)
 
     splits = stratified_group_split(
         primary,
         seed=int(config["seed"]),
         group_column=group_column,
     )
+    print("Split sizes:")
+    for name in ("train", "val", "test"):
+        subset = splits[name]
+        counts = subset["label"].value_counts()
+        split_name = "validation" if name == "val" else name
+        print(
+            f"  {split_name}: total={len(subset)}, "
+            f"Benign={int(counts.get(0, 0))}, DDoS={int(counts.get(1, 0))}"
+        )
+    audit = shortcut_audit(
+        splits["train"],
+        int(config["seed"]),
+        source,
+    )
+
     train_values = transform_features(splits["train"])
     scaler = StandardScaler().fit(train_values)
     for name, subset in splits.items():
@@ -293,12 +355,11 @@ def prepare_dataset(
     test_vectors = set(map(tuple, splits["test"][FEATURES].to_numpy()))
     duplicates = len(train_vectors & test_vectors)
     print(f"Duplicate feature vectors between train and test: {duplicates}")
-    audit = shortcut_audit(splits["train"], int(config["seed"]))
-    audit.to_csv(ROOT / "results" / "shortcut_audit.csv", index=False)
     audit.attrs["source"] = source
     audit.attrs["group_column"] = group_column
     audit.attrs["duplicate_count"] = duplicates
     audit.attrs["train_rows"] = len(splits["train"])
+    audit.to_csv(ROOT / "results" / "shortcut_audit.csv", index=False)
     audit.attrs["csv_rows"] = len(csv_frame)
     return primary, attack_flows, domain_gap, splits, audit
 

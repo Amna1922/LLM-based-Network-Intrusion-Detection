@@ -4,6 +4,7 @@ __pycache__/
 .pytest_cache/
 results/
 data/*.pcap
+data/benign_pcaps/
 data/*.csv
 *.safetensors
 *.bin

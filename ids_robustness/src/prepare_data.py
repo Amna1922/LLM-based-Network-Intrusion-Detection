@@ -12,6 +12,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.tree import DecisionTreeClassifier
 
 from src.pcap_features import FEATURE_COLUMNS, extract_pcap_flows
+from src.reproducibility import save_environment
 from src.utils import ROOT, load_config, resolve_path
 
 FEATURES = FEATURE_COLUMNS
@@ -240,11 +241,71 @@ def shortcut_audit(
     return pd.DataFrame(rows)
 
 
-def build_text_rows(frame: pd.DataFrame) -> pd.DataFrame:
-    """Format normalized feature values as classifier prompts."""
+def save_data_summary(
+    source: str,
+    before_cap: pd.Series,
+    after_cap: pd.Series,
+) -> None:
+    """Save class counts before and after the configured row cap."""
+    rows = []
+    for label, class_name in ((0, "Benign"), (1, "DDoS")):
+        rows.append(
+            {
+                "source": source,
+                "class": class_name,
+                "flows_before_cap": int(before_cap.get(label, 0)),
+                "flows_after_cap": int(after_cap.get(label, 0)),
+            }
+        )
+    output_path = ROOT / "results" / "data_summary.csv"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(rows).to_csv(output_path, index=False)
+
+
+def save_split_membership(
+    splits: dict[str, pd.DataFrame],
+    output_dir: str | Path,
+) -> None:
+    """Save per-flow split IDs and labels for exact dataset reproduction."""
+    target_dir = Path(output_dir)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    columns = [
+        column
+        for column in ("flow_id", "session_id", "label")
+        if any(column in frame.columns for frame in splits.values())
+    ]
+    for name in ("train", "val", "test"):
+        frame = splits[name]
+        present_columns = [column for column in columns if column in frame.columns]
+        split_name = "validation" if name == "val" else name
+        frame[present_columns].to_csv(
+            target_dir / f"{split_name}.csv",
+            index=False,
+        )
+
+
+def build_text_rows(
+    frame: pd.DataFrame,
+    features: list[str] | None = None,
+    include_feature_names: bool = True,
+) -> pd.DataFrame:
+    """Format selected normalized features as named or bare-value prompts."""
+    selected_features = FEATURES if features is None else features
+    unknown_features = set(selected_features) - set(FEATURES)
+    if not selected_features or unknown_features:
+        raise ValueError(f"Invalid prompt feature selection: {sorted(unknown_features)}")
     text_rows = []
     for row in frame.itertuples(index=False):
-        values = [f"{name}: {getattr(row, name):.4f}" for name in FEATURES]
+        if include_feature_names:
+            values = [
+                f"{name}: {getattr(row, name):.4f}"
+                for name in selected_features
+            ]
+        else:
+            values = [
+                f"{getattr(row, name):.4f}"
+                for name in selected_features
+            ]
         text_rows.append(
             {
                 "text": "Classify this network flow as Benign or DDoS. Flow: "
@@ -289,11 +350,11 @@ def prepare_dataset(
         source = "pcap"
         print("Primary dataset source: PCAP")
         primary = build_pcap_dataset(attack_path, benign_paths, duration_floor)
-        raw_counts = primary["label"].value_counts()
+        before_cap = primary["label"].value_counts()
         print(
             "PCAP flows extracted before row cap: "
-            f"Benign={int(raw_counts.get(0, 0))}, "
-            f"DDoS={int(raw_counts.get(1, 0))}"
+            f"Benign={int(before_cap.get(0, 0))}, "
+            f"DDoS={int(before_cap.get(1, 0))}"
         )
         primary = cap_rows_by_session(
             primary,
@@ -305,9 +366,11 @@ def prepare_dataset(
         source = "csv"
         print("Primary dataset source: CSV")
         primary = csv_frame
+        before_cap = primary["label"].value_counts()
         group_column = "flow_id"
 
     primary_counts = primary["label"].value_counts()
+    save_data_summary(source, before_cap, primary_counts)
     unit = "flows" if source == "pcap" else "rows"
     print(
         f"Primary dataset {unit} after cap: "
@@ -322,6 +385,8 @@ def prepare_dataset(
         seed=int(config["seed"]),
         group_column=group_column,
     )
+    save_split_membership(splits, ROOT / "results" / "splits")
+    save_environment(ROOT / "results" / "environment.json")
     print("Split sizes:")
     for name in ("train", "val", "test"):
         subset = splits[name]

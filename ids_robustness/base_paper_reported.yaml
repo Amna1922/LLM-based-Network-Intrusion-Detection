@@ -1,0 +1,39 @@
+paper:
+  title: "Traffic-Aware Randomized Smoothing for LLM-Based Network Intrusion Detection"
+  author: "Zhenpeng Li"
+  id: "arXiv:2607.13801v1 [cs.CR], 15 Jul 2026 (preprint)"
+problem: "Certified robustness (randomized smoothing) of LLM-IDS limited to attacker-controllable (DC) features"
+method: "TA-RS: Gaussian noise on DC features only; noise-augmented LoRA fine-tuning (K=2 copies, sigma_train 0.25)"
+setup:   # Sections 5.2 and 5.5
+  models: ["Qwen3-8B", "LLaMA3-8B"]
+  precision: "BF16"
+  lora: {rank: 16, alpha: 32, dropout: 0.05, targets: "q/k/v/o"}
+  epochs: 5
+  effective_batch: 32
+  learning_rate: 1.0e-4
+  seed: 42
+  inference: "greedy, max_new_tokens 16, batch 64"
+  certification: {N0: 20, N: 200, alpha: 0.001, sigma: [0.25, 0.50, 1.00]}   # Sections 4.3, 5.4
+datasets:   # Table 2
+  CIC-IDS-2018: {classes: 4, features: 25, dc_features: 14}
+  HIKARI-2021: {classes: 3, features: 82, dc_features: 25}
+  RT-IoT2022: {classes: 5, features: 83, dc_features: 27}
+metrics: ["certified accuracy CA(r)", "abstention rate", "smooth accuracy", "attack success rate (conditional on clean-correct samples)"]
+results:
+  CA_0p05_sigma_0p25_clean_vs_noise_aug_percent:   # Table 3
+    CIC_LLaMA3: {clean: 20.6, noise_aug: 76}
+    CIC_Qwen3: {clean: 14.4, noise_aug: 68}
+    HIKARI_LLaMA3: {clean: 33.3, noise_aug: 82}
+    HIKARI_Qwen3: {clean: 56.7, noise_aug: 100}
+  clean_accuracy_CIC_clean_trained: "approx 84 percent"   # Section 6.3
+  transfer_attack_ASR_percent:   # Table 12, sigma 0.25
+    CIC_Qwen3_eps_0p05: {asr_base: 16.0, asr_smoothed: 8.6}
+    CIC_Qwen3_eps_0p15: {asr_base: 19.1, asr_smoothed: 8.6}
+    HIKARI_LLaMA3_eps_0p05: {asr_base: 3.9, asr_smoothed: 1.6}
+    HIKARI_LLaMA3_eps_0p15: {asr_base: 4.7, asr_smoothed: 0.0}
+  duplicate_audit: "22 duplicate vectors in the 160-sample CIC evaluation subset (13.8 percent)"   # Section 7.7
+limitations:   # Section 7.7
+  - "Single LoRA seed (42); training variance not estimated"
+  - "N=200 Monte Carlo samples; 40 test samples per class"
+  - "L2 certificate does not fully cover the Linf threat budget"
+  - "Certification needs 200 forward passes per query"

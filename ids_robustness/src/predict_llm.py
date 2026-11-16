@@ -66,7 +66,29 @@ def generate_answers(
     max_input_length: int,
 ) -> list[str | None]:
     """Generate greedy answers in batches and parse the first valid class name."""
-    predictions: list[str | None] = []
+    answers = generate_raw_answers(
+        prompts,
+        model=model,
+        tokenizer=tokenizer,
+        device=device,
+        batch_size=batch_size,
+        max_new_tokens=max_new_tokens,
+        max_input_length=max_input_length,
+    )
+    return [parse_class_name(answer) for answer in answers]
+
+
+def generate_raw_answers(
+    prompts: list[str],
+    model: torch.nn.Module,
+    tokenizer: object,
+    device: str,
+    batch_size: int,
+    max_new_tokens: int,
+    max_input_length: int,
+) -> list[str]:
+    """Generate greedy answer text in batches without parsing class names."""
+    raw_answers: list[str] = []
     with torch.inference_mode():
         for start in range(0, len(prompts), batch_size):
             batch = prompts[start : start + batch_size]
@@ -85,12 +107,36 @@ def generate_answers(
                 eos_token_id=tokenizer.eos_token_id,
             )
             input_length = encoded["input_ids"].shape[1]
-            answers = tokenizer.batch_decode(
+            decoded = tokenizer.batch_decode(
                 generated[:, input_length:],
                 skip_special_tokens=True,
             )
-            predictions.extend(parse_class_name(answer) for answer in answers)
-    return predictions
+            raw_answers.extend(decoded)
+    return raw_answers
+
+
+def generate_unique_raw_answers(
+    prompts: list[str],
+    model: torch.nn.Module,
+    tokenizer: object,
+    device: str,
+    batch_size: int,
+    max_new_tokens: int,
+    max_input_length: int,
+) -> list[str]:
+    """Generate each distinct prompt once and restore raw answers to row order."""
+    unique_prompts = list(dict.fromkeys(prompts))
+    unique_answers = generate_raw_answers(
+        unique_prompts,
+        model=model,
+        tokenizer=tokenizer,
+        device=device,
+        batch_size=batch_size,
+        max_new_tokens=max_new_tokens,
+        max_input_length=max_input_length,
+    )
+    lookup = dict(zip(unique_prompts, unique_answers))
+    return [lookup[prompt] for prompt in prompts]
 
 
 def predict_unique_prompts(
@@ -103,9 +149,8 @@ def predict_unique_prompts(
     max_input_length: int,
 ) -> list[str | None]:
     """Generate each distinct prompt once and restore the original row order."""
-    unique_prompts = list(dict.fromkeys(prompts))
-    unique_predictions = generate_answers(
-        unique_prompts,
+    answers = generate_unique_raw_answers(
+        prompts,
         model=model,
         tokenizer=tokenizer,
         device=device,
@@ -113,8 +158,7 @@ def predict_unique_prompts(
         max_new_tokens=max_new_tokens,
         max_input_length=max_input_length,
     )
-    lookup = dict(zip(unique_prompts, unique_predictions))
-    return [lookup[prompt] for prompt in prompts]
+    return [parse_class_name(answer) for answer in answers]
 
 
 def predict_labels() -> tuple[pd.Series, pd.Series]:

@@ -1,39 +1,115 @@
 # IDS Robustness
 
-This project studies a TCP SYN flood evasion against a small LLM network intrusion detector.
+This project evaluates an offline TCP SYN-flood intrusion detector using PCAP flow
+features, benign PCAP captures, and controlled packet perturbations. It does not
+scan networks or send traffic. A missing Hugging Face model may be downloaded
+when training or inference first loads it.
 
-## Hardware
-The baseline work assumes a laptop CPU and a GTX 1650 Ti GPU.
+## Requirements and virtual environment
 
-## Python version
-Python 3.11 is required.
+Use Python 3.11. From this project directory, open PowerShell:
 
-## Create the venv
-```bash
-python -m venv .venv
-source .venv/bin/activate
+```powershell
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-## GPU note
-If you use CUDA, install the CUDA build of PyTorch. For a GTX 1650 Ti, the cu121 wheel is a common choice. Check `nvidia-smi` before installing.
+In Command Prompt, activate the environment with:
 
-## Run commands
-```bash
+```cmd
+.venv\Scripts\activate.bat
+```
+
+## Verify GPU support
+
+Install a CUDA-enabled PyTorch build compatible with the installed NVIDIA
+driver, then verify it from the activated environment:
+
+```powershell
+nvidia-smi
+python -c "import torch; print('CUDA available:', torch.cuda.is_available()); print('PyTorch CUDA:', torch.version.cuda); print('GPU:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU')"
+```
+
+The trainer automatically selects CUDA when PyTorch reports it available;
+otherwise it uses CPU. GPU runs use FP16, micro-batch 4, and gradient
+accumulation 8 by default.
+
+## Inputs
+
+Place the input data relative to the project as configured in `config.yaml`:
+
+- `../data/FlowStatsfile_modified_eval.csv`
+- `../data/CIC-DDoS-2019-SynFlood_modified.pcap`
+- Optional benign `.pcap` or `.pcapng` files in `../data/benign_pcaps/`
+
+When benign captures are present, PCAP flows are the primary training source.
+CSV rows remain a separate baseline and are never mixed into PCAP training.
+
+## Run
+
+Run the quick end-to-end smoke test:
+
+```powershell
 python -m pytest -q
 python -m src.run_eval --quick
+```
+
+Run the configured evaluation:
+
+```powershell
 python -m src.run_eval
+```
+
+Run or resume all ordered project tasks, including the ablations:
+
+```powershell
+python -m src.run_experiments
+```
+
+The experiment runner prepares data, performs the delay audit, runs baselines
+and multi-seed statistics, completes Task 4 ablations, generates Tasks 5-6
+analyses and Task 7 figures/tables, compares with the supplied paper values,
+and writes the setup report. Existing stage outputs are reused. The three
+pending Task 4 LoRA ablations require GPU training and may take several hours.
+If Task 4 is interrupted while writing its summary, rerun the same command:
+completed A1-A3 run caches are reused, and missing ablation rows are reported
+without crashing.
+To start at a later stage, for example after completing the experiments:
+
+```powershell
+python -m src.run_experiments --start-at task7-plots-tables
+```
+
+To run individual existing analyses:
+
+```powershell
 python -m src.delay_audit
 python -m src.baselines
+python -m src.feature_space
+python -m src.analysis
+python -m src.plots
+python -m src.make_tables
+python tools/make_setup_doc.py
 ```
 
-The quick run reuses an existing LoRA adapter when available, evaluates 100 flows, and uses two perturbation variants. Use `python -m src.run_eval --quick --retrain` to retrain for the smoke test. The full run uses the configured defaults and reuses the adapter unless `--retrain` is supplied.
+## Outputs and documentation
 
-Results are written under `results/` and docs under `docs/`. Place benign `.pcap` or `.pcapng` files in `../data/benign_pcaps/` to train and evaluate using PCAP flows. If that directory has no captures, the project uses the CSV-only fallback and reports the source mismatch.
-The delay audit compares `client_only` and `client_and_reply` timing policies on held-out attack flows and writes `results/delay_audit.md`. It requires PCAP-primary data and reuses its report and generated captures when present.
+Results are written under `results/`, including `results/figures/` and
+`results/tables/`. Every generated table has CSV and LaTeX formats. Figures
+are saved as 300 dpi PNG and PDF, with captions in
+`results/figures/captions.md`. Missing experiments are marked as unavailable;
+the project does not fabricate ablation results or historical loss curves.
+New training runs save per-step `training_loss.csv` files inside their adapter
+run folders; Fig. 10 uses the saved per-seed histories.
 
-## Regenerate docs
-```bash
+Generate the source guide and reproduction setup after code changes:
+
+```powershell
 python tools/make_docs.py
+python tools/make_setup_doc.py
 ```
+
+See [docs/SETUP.md](docs/SETUP.md) for reproduction details and
+[docs/DECISIONS.md](docs/DECISIONS.md) for recorded design choices.

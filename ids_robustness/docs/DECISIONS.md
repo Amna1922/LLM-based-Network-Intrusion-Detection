@@ -8,12 +8,19 @@
 - The model uses the 7-feature set specified by the project instructions, excluding identifiers, constants, and invalid rows.
 - The project uses its own PCAP flow extractor instead of CICFlowMeter so the feature pipeline remains fully offline and self-contained.
 - The prompt template is a custom text-only classifier format with normalised feature values rounded to four decimals.
-- The data uses a 70/10/20 split grouped by bidirectional session for PCAP data and flow id for CSV data, with a single seed value for reproducibility.
+- The data uses a 70/10/20 split grouped by bidirectional session for PCAP data and flow id for CSV data, with split seed 42. The LoRA seed summary uses seeds 42, 123, and 2025.
 - The shortcut audit measures one-feature accuracy on the unscaled training partition and reports its source and row count. PCAP-primary preparation also reports each feature's raw median, minimum, and maximum by class.
 - The full-run defaults use 4000 rows, 2 epochs, micro-batch 4, and accumulation 8 for the GTX 1650 Ti. The quick path uses 200 rows and two optimizer steps.
-- One fixed seed is used. Training logs show per-step loss and an ETA.
+- Training logs show per-step loss and an ETA. Each new run saves its per-step loss history as `training_loss.csv` inside its adapter run folder, and Fig. 10 reads the seed-run CSVs. Historical completed main-run losses have only final-loss records, so their curves cannot be reconstructed.
 - The CSV and PCAP sources differ and therefore the project tracks the domain gap explicitly instead of pretending the domains are identical.
 - Delay experiments default to `client_and_reply` to preserve existing behavior. The delay audit also measures `client_only`, which shifts attacker packets after the first packet of each flow and leaves replies unchanged.
 - Classical baseline runs use seeds 42 through 51. Logistic regression uses `max_iter=1000`, random forest uses 200 trees, and histogram gradient boosting uses scikit-learn defaults with the run seed.
 - LoRA seed statistics include the existing seed 42 model and new runs at seeds 123 and 2025. Zero-shot outputs without a valid class name count as non-DDoS detections; zero-shot has no ROC-AUC because it does not provide class scores.
 - Detection intervals use the Wilson score method at the configured 95 percent confidence level. Seed-level standard deviations use the sample standard deviation.
+- Feature-space variants reuse the full-grid manifest and test-session flow order. Padding is applied only to attacker-direction TCP packets carrying declared payload; delay increases only attacker-direction durations, matching the reply-timing policy. Rates are recomputed after duration changes.
+- Failure breakdowns use actual original and perturbed PCAP predictions. Qualitative examples are selected deterministically from the zero-padding, 50 ms delay comparison and include the model's generated answer text.
+- Retrained ablations use the same split, scaler, and configured seed as the main run, with separate adapters and per-ablation result caches. Zero-shot and perturbation-group comparisons reuse the saved Task 2 and main-run results.
+- Ablation notes use the saved A4 name `A4_zero_shot`; missing A1-A4 or A5 category rows are reported as unavailable instead of causing an indexing failure. If a stage is interrupted, rerunning it reuses per-ablation run caches.
+- Task 4 retraining was implemented but not launched while generating the remaining analysis code. Ablation-dependent figures and tables are omitted until its result files exist.
+- Generated figures use only saved measurements, are exported as 300 dpi PNG and PDF, and have a matching caption file. Generated tables are written as CSV and LaTeX.
+- The resumable experiment runner processes preparation, Tasks 1-9 in order and reuses completed stage outputs; its Task 4 stage can require several hours of GPU training.

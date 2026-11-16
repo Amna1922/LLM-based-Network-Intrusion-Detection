@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import time
 from pathlib import Path
 
@@ -159,6 +160,7 @@ def build_trainer(
     tokenizer: object,
     examples: list[dict[str, list[int]]],
     arguments: TrainingArguments,
+    progress_callback: TrainingProgressCallback | None = None,
 ) -> Trainer:
     """Create a Trainer with answer-only labels and dynamic batch padding."""
     return Trainer(
@@ -167,7 +169,7 @@ def build_trainer(
         train_dataset=examples,
         data_collator=make_collator(tokenizer),
         tokenizer=tokenizer,
-        callbacks=[TrainingProgressCallback()],
+        callbacks=[progress_callback or TrainingProgressCallback()],
     )
 
 
@@ -177,16 +179,21 @@ class TrainingProgressCallback(TrainerCallback):
     def __init__(self) -> None:
         """Initialize the timer used to estimate remaining training time."""
         self.started_at = 0.0
+        self.history: list[dict[str, int | float]] = []
 
     def on_train_begin(self, args, state, control, **kwargs):
         """Start the training timer."""
         self.started_at = time.monotonic()
+        self.history = []
         return control
 
     def on_log(self, args, state, control, logs=None, **kwargs):
         """Print the current step, loss, and estimated time remaining."""
         if not logs or "loss" not in logs:
             return control
+        self.history.append(
+            {"step": int(state.global_step), "loss": float(logs["loss"])}
+        )
         elapsed = time.monotonic() - self.started_at
         steps = max(int(state.global_step), 1)
         remaining_steps = max(int(state.max_steps) - steps, 0)
@@ -210,8 +217,18 @@ def save_training_artifacts(
     adapter_dir: str | None = None,
     training_time_s: float | None = None,
     log_path: str | None = None,
+    training_history: list[dict[str, int | float]] | None = None,
+    peak_gpu_memory_bytes: int | None = None,
 ) -> dict[str, object]:
     """Save the LoRA adapter and write the training summary."""
+    if not training_history:
+        raise ValueError("Trainer did not record per-step training loss.")
+    if any(
+        int(record["step"]) < 1 or not math.isfinite(float(record["loss"]))
+        for record in training_history
+    ):
+        raise ValueError("Training history contains an invalid step or loss.")
+    history_frame = pd.DataFrame(training_history, columns=["step", "loss"])
     adapter_dir = (
         ROOT / "results" / "llm_adapter"
         if adapter_dir is None
@@ -234,11 +251,17 @@ def save_training_artifacts(
         handle.write(f"train_loss={training_loss:.6f}\n")
         if training_time_s is not None:
             handle.write(f"training_time_seconds={training_time_s:.3f}\n")
+        if peak_gpu_memory_bytes is not None:
+            handle.write(f"peak_gpu_memory_bytes={peak_gpu_memory_bytes}\n")
+    history_path = adapter_dir / "training_loss.csv"
+    history_frame.to_csv(history_path, index=False)
     return {
         "device": device,
         "train_rows": row_count,
         "optimizer_steps": trainer.state.global_step,
         "train_loss": training_loss,
+        "training_history_path": str(history_path),
+        "peak_gpu_memory_bytes": peak_gpu_memory_bytes,
         "adapter_path": str(adapter_dir),
         "log_path": str(summary_path),
     }
@@ -249,6 +272,8 @@ def train_model(
     prepared_data: tuple | None = None,
     seed: int | None = None,
     adapter_dir: str | None = None,
+    feature_columns: list[str] | None = None,
+    include_feature_names: bool = True,
 ) -> dict[str, object]:
     """Fine-tune and save a LoRA adapter using the configured CPU or CUDA settings."""
     config = load_config(ROOT / "config.yaml")
@@ -286,7 +311,11 @@ def train_model(
     model.print_trainable_parameters()
     examples = build_training_examples(
         tokenizer,
-        build_text_rows(training_rows),
+        build_text_rows(
+            training_rows,
+            features=feature_columns,
+            include_feature_names=include_feature_names,
+        ),
         max_length=int(config["max_seq_length"]),
     )
     training_output = (
@@ -301,11 +330,23 @@ def train_model(
         seed=run_seed,
         output_dir=str(training_output),
     )
-    trainer = build_trainer(model, tokenizer, examples, arguments)
+    progress_callback = TrainingProgressCallback()
+    trainer = build_trainer(
+        model,
+        tokenizer,
+        examples,
+        arguments,
+        progress_callback=progress_callback,
+    )
+    if device == "cuda":
+        torch.cuda.reset_peak_memory_stats()
     training_started = time.monotonic()
     training_loss = trainer.train().training_loss
     training_time_s = time.monotonic() - training_started
-    return save_training_artifacts(
+    peak_gpu_memory_bytes = (
+        int(torch.cuda.max_memory_allocated()) if device == "cuda" else None
+    )
+    result = save_training_artifacts(
         model=model,
         tokenizer=tokenizer,
         trainer=trainer,
@@ -321,7 +362,16 @@ def train_model(
             if adapter_dir is not None
             else None
         ),
+        training_history=progress_callback.history,
+        peak_gpu_memory_bytes=peak_gpu_memory_bytes,
     )
+    from src.reproducibility import save_environment
+
+    save_environment(
+        ROOT / "results" / "environment.json",
+        peak_gpu_memory_bytes=peak_gpu_memory_bytes,
+    )
+    return result
 
 
 def main() -> None:
